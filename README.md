@@ -14,12 +14,19 @@ Jooble API ─┘
 
 1. **Extract** — [`src/extract_adzuna.py`](src/extract_adzuna.py) and
    [`src/extract_jooble.py`](src/extract_jooble.py) each call their API and
-   dump raw results per city to `data/raw/<city>_jobs.json`.
-2. **Transform** — [`src/transform.py`](src/transform.py) loads all raw JSON
-   into a single Spark DataFrame, deduplicates listings, and parses the messy
-   free-text `salary` field into a currency (`CZK`/`EUR`/`USD`) and a numeric
-   value (handling things like `"40k"` vs `"40000"`). It then aggregates job
-   count and average salary per city/currency.
+   save raw results per city to `data/raw/<source>_<city>_jobs.json` (e.g.
+   `adzuna_Vienna_jobs.json`, `jooble_Vienna_jobs.json`) — source-prefixed so
+   the two APIs' files never overwrite each other. Adzuna's response is
+   normalized into the same `{id, title, company, salary}` shape Jooble
+   already returns, so downstream code doesn't need source-specific logic.
+   Note: Adzuna doesn't cover Czech Republic, so Brno data comes from Jooble
+   only; Vienna gets contributions from both.
+2. **Transform** — [`src/transform.py`](src/transform.py) loads every raw
+   file from both sources into a single Spark DataFrame (tagging each row
+   with `city` and `api_source`), deduplicates per source+id, and parses the
+   messy free-text `salary` field into a currency (`CZK`/`EUR`/`USD`) and a
+   numeric value (handling things like `"40k"` vs `"40000"`). It then
+   aggregates job count and average salary per city/currency.
 3. **Load** — the cleaned rows and the summary are written to
    `data/clean/jobs.parquet` and `data/clean/jobs_summary.parquet`.
 4. **Analyze** — [`src/read_parquet.py`](src/read_parquet.py) reads the
@@ -31,11 +38,14 @@ Jooble API ─┘
 
 | city   | currency | job_count | avg_salary |
 |--------|----------|-----------|------------|
-| Brno   | CZK      | 21        | 75,102     |
-| Vienna | USD      | 21        | 162,738    |
-| Remote | USD      | 5         | 59,095     |
+| Brno   | CZK      | 20        | 81,857     |
+| Vienna | EUR      | 27        | 65,727     |
+| Vienna | USD      | 20        | 164,465    |
+| Remote | USD      | 3         | 68,491     |
 
-(Rows with `currency = null` are listings that didn't include a parsed salary.)
+(Rows with `currency = null` are listings that didn't include a parsed
+salary. Vienna shows both EUR — from Adzuna — and USD — from Jooble —
+confirming both sources are actually combined, not just concatenated files.)
 
 ## Tech stack
 
@@ -54,7 +64,7 @@ cp .env.example .env       # then fill in your API keys
 ```
 
 You'll need free API keys from [Adzuna](https://developer.adzuna.com/) and
-[Jooble](https://jooble.org/api/about) to run the extract step.
+[Jooble](https://jooble.org/api/about) to run the extract step. (For Jooble you need an API key per region.)
 
 ## Usage
 
@@ -77,7 +87,16 @@ local Java/PySpark install works before running the pipeline.
   writer requires Hadoop's `winutils.exe` on Windows, which isn't installed
   in this environment. `df.toPandas().to_parquet(...)` sidesteps that while
   keeping Parquet as the storage format.
-- **Two independent extractors**: Adzuna and Jooble have different auth and
-  response shapes, so they're kept as separate scripts that both converge on
-  the same `data/raw/<city>_jobs.json` contract — the transform step doesn't
-  care which API a listing came from.
+- **Two independent extractors, combined without overwriting**: Adzuna and
+  Jooble have different auth and response shapes, so they're kept as
+  separate scripts, but each writes to a source-prefixed filename
+  (`adzuna_<city>_jobs.json` / `jooble_<city>_jobs.json`) and Adzuna's output
+  is normalized to match Jooble's shape at extraction time. `transform.py`
+  reads every `<source>_<city>_jobs.json` file it finds, tags each row with
+  `api_source`, and dedupes per source+id (ids aren't comparable across
+  APIs) — so both sources genuinely combine into one dataset instead of one
+  silently overwriting the other on a case-insensitive filesystem.
+- **Adzuna doesn't cover every city**: its supported countries don't include
+  Czech Republic, so `extract_adzuna.py` only fetches Vienna. `transform.py`
+  skips any `<source>_<city>_jobs.json` combination that doesn't exist
+  rather than assuming every source covers every city.

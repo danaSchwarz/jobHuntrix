@@ -7,13 +7,33 @@ load_dotenv()
 ADZUNA_APP_ID = os.getenv("ADZUNA_APP_ID")
 ADZUNA_APP_KEY = os.getenv("ADZUNA_APP_KEY")
 
-CITIES = {"vienna": "at", "brno": "cz"}
+# Capitalized to match extract_jooble.py's city naming, so files from both
+# sources tag the same city consistently for transform.py.
+# Adzuna doesn't cover Czech Republic at all (not in its supported country
+# list), so Brno can only come from Jooble - Adzuna only contributes Vienna.
+CITIES = {"Vienna": "at"}
 SEARCH = "developer"
 PAGES = 2
+
+# Adzuna returns salary_min/salary_max as plain numbers with no currency
+# symbol. We format them into the same "symbol + number" text Jooble's
+# salary field already uses, so transform.py's existing parser handles
+# both sources without any source-specific logic.
+CURRENCY_SYMBOL = {"at": "€"}
+
+
+def format_salary(job, symbol):
+    salary_min = job.get("salary_min")
+    salary_max = job.get("salary_max")
+    if not salary_min or not salary_max:
+        return ""
+    return f"{symbol}{salary_min:.0f} - {symbol}{salary_max:.0f}"
+
 
 os.makedirs("data/raw", exist_ok=True)
 
 for city, country in CITIES.items():
+    symbol = CURRENCY_SYMBOL[country]
     all_results = []
     for page in range(1, PAGES + 1):
 
@@ -23,7 +43,7 @@ for city, country in CITIES.items():
             "app_key": ADZUNA_APP_KEY,
             "results_per_page": 50,
             "what": SEARCH,
-            "where": city,
+            "where": city.lower(),  # Adzuna's "where" param needs lowercase, unlike our city labels
             "content-type": "application/json",
         }
 
@@ -32,7 +52,20 @@ for city, country in CITIES.items():
         data = response.json().get("results", [])
         all_results.extend(data)
 
-    with open(f"data/raw/{city}_jobs.json", "w", encoding="utf-8") as f:
-        json.dump(all_results, f, ensure_ascii=False, indent=2)
+    # Normalize to the same {id, title, company, salary} shape Jooble's
+    # raw output already has.
+    normalized = [
+        {
+            "id": job.get("id"),
+            "title": job.get("title"),
+            "company": job.get("company", {}).get("display_name"),
+            "salary": format_salary(job, symbol),
+        }
+        for job in all_results
+    ]
 
-    print(f"{city}: saved {len(all_results)} job listings to data/raw/{city}_jobs.json")
+    out_path = f"data/raw/adzuna_{city}_jobs.json"
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(normalized, f, ensure_ascii=False, indent=2)
+
+    print(f"{city}: saved {len(normalized)} job listings to {out_path}")

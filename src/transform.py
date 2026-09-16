@@ -13,16 +13,22 @@ spark = SparkSession.builder.appName("jobs").getOrCreate()
 spark.conf.set("spark.sql.ansi.enabled", "false")
 
 CITIES = ["Brno", "Vienna", "Remote"]
+SOURCES = ["adzuna", "jooble"]  # not every source covers every city (e.g. Adzuna has no "Remote")
 
 df = None
-for city in CITIES:
-    part = (spark.read.option("multiLine", True)
-                 .json(f"data/raw/{city}_jobs.json")
-                 .withColumn("city", lit(city)))
-    df = part if df is None else df.unionByName(part, allowMissingColumns=True)
+for source in SOURCES:
+    for city in CITIES:
+        path = f"data/raw/{source}_{city}_jobs.json"
+        if not os.path.exists(path):
+            continue
+        part = (spark.read.option("multiLine", True)
+                     .json(path)
+                     .withColumn("city", lit(city))
+                     .withColumn("api_source", lit(source)))
+        df = part if df is None else df.unionByName(part, allowMissingColumns=True)
 
-# --- dedupe + turn empty salaries into null ---
-df = df.dropDuplicates(["id"])
+# --- dedupe (per source, since ids from different APIs aren't comparable) + turn empty salaries into null ---
+df = df.dropDuplicates(["api_source", "id"])
 df = df.withColumn("salary",
                    when(trim(col("salary")) == "", None).otherwise(col("salary")))
 
@@ -44,7 +50,7 @@ df = df.withColumn("salary_num",
                                       ",", ".").cast("double")
                        * when(col("has_k"), 1000).otherwise(1)))
 
-df.select("city", "salary", "currency", "salary_num").show(20, truncate=30)
+df.select("city", "api_source", "salary", "currency", "salary_num").show(20, truncate=30)
 
 summary = (df.groupBy("city", "currency")
            .agg(

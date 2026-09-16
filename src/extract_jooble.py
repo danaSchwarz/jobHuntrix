@@ -28,6 +28,7 @@ for city, (host, api_key) in SOURCES.items():
     response.raise_for_status()          # fail loudly on 4xx/5xx
     jobs = response.json().get("jobs", [])   # fresh list each city
 
-    with open(f"data/raw/{city}_jobs.json", "w", encoding="utf-8") as f:
+    out_path = f"data/raw/jooble_{city}_jobs.json"
+    with open(out_path, "w", encoding="utf-8") as f:
         json.dump(jobs, f, ensure_ascii=False, indent=2)
-    print(f"{city}: saved {len(jobs)} jobs")
+    print(f"{city}: saved {len(jobs)} jobs to {out_path}")
